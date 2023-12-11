@@ -3,11 +3,12 @@ import random
 import numpy as np
 from collections import deque
 import data
-from model import Linear_QNet, QTrainer
+from model import QNetwork, QTrainer
 import time
 import threading
 import os
 from helper import plot
+from epsilongreedypolicy import EpsilonGreedyPolicy
 
 #from helper import plot
 #agent learning curve
@@ -26,19 +27,11 @@ class Agent:
     def __init__(self): #create the agent (need number of games, epsilon value (80 or 90 idk yet))
         self.num_games = 0
         self.epsilon = 0 #randomness control
-        self.gamma = 0.9 #discount rate 
+        self.gamma = 0.99 #discount rate 
         self.memory = deque(maxlen=MAX_MEMORY) #popleft() called after deque becomes full
-        self.model = Linear_QNet()
-        self.trainer = QTrainer(self.model, lr=LR, gamma = self.gamma)
-
-    def load_model(self, model_path):
-        print(f"Loading model from: {model_path}")
-        try:
-            self.model.load_state_dict(torch.load(model_path))
-            self.model.eval()  # Set the model to evaluation mode
-            print("Model loaded successfully.")
-        except Exception as e:
-            print(f"Error loading the model: {e}")
+        self.q_network = QNetwork()
+        self.target_q_network = QNetwork()
+        self.trainer = QTrainer(self.q_network, self.target_q_network, lr=LR, gamma = self.gamma)
 
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done)) #popleft() if MAX_MEMORY is reached
@@ -56,30 +49,28 @@ class Agent:
         self.trainer.train_step(state, action, reward, next_state, done)
 
 
-    def get_action(self, state):
+    def get_action(self, state, epsilon):
         #random moves: tradeoff between exploration and exploitation
-        self.epsilon = 300 - self.num_games
-        if random.randint(0, 200) < self.epsilon:
-            move = random.randint(0,16)
-        else:
-            state0 = torch.tensor(state, dtype=torch.float)
-            prediction = self.model(state0)
-            move = torch.argmax(prediction).item()
-        return move
+        epsilon.decay_epsilon()
+        state0 = torch.tensor(state, dtype=torch.float)
+        prediction = self.q_network(state0)
+        return epsilon.choose_action(0, 16, prediction)
     
 def train():
     plot_scores = []
     plot_mean_scores = []
     agent = Agent()
-
+    epsilon = EpsilonGreedyPolicy(initial_epsilon=1.0, min_epsilon=0.14, decay_rate=0.999993)
     # Load the pre-trained model
+    target_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\target_model.pth"
     model_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\model.pth"
-    if os.path.exists(model_path):
-        agent.model.load(model_path)
+    if os.path.exists(model_path) and os.path.exists(target_path):
+        agent.target_q_network.load(target_path)
+        agent.q_network.load(model_path)
 
     def on_connection_established(client_socket):
         total_score = 0
-        record = agent.model.record_score  # Load the record from the model
+        record = 0
         print("Connection established")
 
         while True:
@@ -87,7 +78,7 @@ def train():
             # get old state
             state_old = data.get_state()
             # get move
-            final_move = agent.get_action(state_old)
+            final_move = agent.get_action(state_old, epsilon)
             # perform move and get new state
             reward, done, score = data.play_step(final_move)
 
@@ -101,13 +92,16 @@ def train():
                 data.reset()
                 agent.num_games += 1
                 agent.train_long_memory()
+                agent.q_network.save("model.pth")  # Save the model with updated record
+
+                if(agent.num_games % 10 == 0):
+                    agent.trainer.update_target_network()
 
                 if score > record:
                     record = score
-                    agent.model.record_score = record
-                    agent.model.save()  # Save the model with updated record
+                    agent.target_q_network.save("target_model.pth")  # Save the model with updated record
 
-                print("Game", agent.num_games, 'Score', score, "Record:", record)
+                print("Game", agent.num_games, 'Score', score, "Record:", record, "Epsilon:", epsilon.epsilon)
                 plot_scores.append(score)
                 total_score += score
                 mean_score = total_score / agent.num_games
