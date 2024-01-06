@@ -9,6 +9,7 @@ import threading
 import os
 from helper import plot
 from epsilongreedypolicy import EpsilonGreedyPolicy
+from replaybuffer import ReplayBuffer
 
 #from helper import plot
 #agent learning curve
@@ -19,9 +20,9 @@ from epsilongreedypolicy import EpsilonGreedyPolicy
 #timer's are how long has it been since you last checked on them
 #freddySFX is the sound he makes when moving
 
-MAX_MEMORY = 100_000
-BATCH_SIZE = 1000
-LR = 0.00125
+MAX_MEMORY = 1_000_000
+BATCH_SIZE = 32
+LR = 0.0105
 
 class Agent:
     def __init__(self): #create the agent (need number of games, epsilon value (80 or 90 idk yet))
@@ -50,17 +51,22 @@ class Agent:
 
 
     def get_action(self, state, epsilon):
-        #random moves: tradeoff between exploration and exploitation
         epsilon.decay_epsilon()
-        state0 = torch.tensor(state, dtype=torch.float)
-        prediction = self.q_network(state0)
-        return epsilon.choose_action(0, 16, prediction)
+        state_tensor = torch.tensor(state, dtype=torch.float32).view(1,-1)
+
+        if epsilon.choose_action(0, 16):
+            return np.random.randint(0, 16)
+        else:
+            advantages = self.q_network.advantage(state_tensor).detach().numpy()
+            action = np.argmax(advantages)  # Choose the action with the highest Q-value
+            return action
+
     
 def train():
     plot_scores = []
     plot_mean_scores = []
     agent = Agent()
-    epsilon = EpsilonGreedyPolicy(initial_epsilon=1.0, min_epsilon=0.14, decay_rate=0.999993)
+    epsilon = EpsilonGreedyPolicy(initial_epsilon=1, min_epsilon=0.01, decay_rate=0.99999932)
     # Load the pre-trained model
     target_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\target_model.pth"
     model_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\model.pth"
@@ -74,7 +80,7 @@ def train():
         print("Connection established")
 
         while True:
-            time.sleep(.3)
+            time.sleep(.3 / 5)
             # get old state
             state_old = data.get_state()
             # get move
