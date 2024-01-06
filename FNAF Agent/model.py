@@ -5,19 +5,36 @@ import torch.nn.functional as F
 import os
 import numpy as np
 
-class QNetwork(nn.Module): #creates a linear model with qnet that contains 11 , 256 , 3 (INTRO AND LAST STAY THE SAME!!)
+class QNetwork(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear1 = nn.Linear(19, 256)
+        self.linear1 = nn.Linear(21, 256)
         self.linear2 = nn.Linear(256, 256)
-        self.linear3 = nn.Linear(256, 16)
-
+        self.v = nn.Linear(256, 1)
+        self.a = nn.Linear(256, 16)
 
     def forward(self,x):
         x = F.relu(self.linear1(x))
         x = F.relu(self.linear2(x))
-        return self.linear3(x) 
+        v = self.v(x)
+        a = self.a(x)
+        #a = a.view(-1, 16)
+        Q = v + (a - torch.mean(a, dim=1, keepdim=True))
+        return Q
     
+    def advantage(self, state):
+        x = F.relu(self.linear1(state))
+        x = F.relu(self.linear2(x))
+        a = self.a(x)
+        return a
+    
+    def value(self, state):
+        x = F.relu(self.linear1(state))
+        x = F.relu(self.linear2(x))
+        v = self.v(x)
+        return v.view(-1)  # Reshape to remove singleton dimension
+    
+
     def save(self, file_name='model.pth'):
         model_folder_path = "./model"
         if not os.path.exists(model_folder_path):
@@ -31,7 +48,14 @@ class QNetwork(nn.Module): #creates a linear model with qnet that contains 11 , 
 
         # Load the model parameters, record, and epsilon
         checkpoint = torch.load(file_name)
-        self.load_state_dict(checkpoint['state_dict'])
+        
+        # Load state_dict only for layers that exist in the checkpoint
+        model_state_dict = self.state_dict()
+        for key in checkpoint['state_dict']:
+            if key in model_state_dict:
+                model_state_dict[key] = checkpoint['state_dict'][key]
+
+        self.load_state_dict(model_state_dict)
         print(f"Successfully loaded!")
         
 class QTrainer:
