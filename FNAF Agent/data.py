@@ -35,35 +35,28 @@ def create_host(callback):
 
 def get_state():
     try:
-            client_socket.send("get_state".encode("utf-8"))
-
-            data = client_socket.recv(1024).decode("utf-8")
-            data_list = data.split(',')
-            current_data = []
-            if data:
-
-                result_list = []
-
-                for element in data_list:
-                    if element.isdigit():
-                        result_list.append(int(element))
-                    elif element.replace('.', '', 1).isdigit():
-                      result_list.append(float(element))
-                    elif element.lower() == 'true' or element.lower() == 'false':
-                        result_list.append(element.lower() == 'true')
-                    else:
-                        result_list.append(element)
-
-
-                for value in result_list:
-                    if isinstance(value, (bool, int, float)):
-                        float_value = float(value)
-                        current_data.append(float_value)
-                current_data = np.array(current_data, dtype=float)
-                return current_data
+        client_socket.send("get_state".encode("utf-8"))
+        data = client_socket.recv(1024).decode("utf-8")
+        data_list = data.split(',')
+        current_data = []
+        if data:
+            for element in data_list:
+                try:
+                    # Attempt to convert the element to a float directly.
+                    float_element = float(element)
+                    current_data.append(float_element)
+                except ValueError:
+                    # Handle non-numeric strings here, if any.
+                    if element.lower() == 'true':
+                        current_data.append(1.0)  # or True, if you want to keep boolean values
+                    elif element.lower() == 'false':
+                        current_data.append(0.0)  # or False, as above
+                    # Optionally, handle other non-numeric cases if necessary.
+        return np.array(current_data, dtype=float)
     except Exception as e:
         print("Error in get_state:", e)
         return None
+
 
 
 
@@ -78,20 +71,32 @@ def play_step(step):
             result_list = []
 
             for element in elements:
-                if element.isdigit() or (element[0] == '-' and element[1:].isdigit()):
-                    result_list.append(int(element))
+                if is_float(element):
+                    result_list.append(float(element))
                 elif element.replace('.', '', 1).isdigit():
                     result_list.append(float(element))
                 elif element.lower() == 'true' or element.lower() == 'false':
                     result_list.append(element.lower() == 'true')
                 else:
                     result_list.append(element)
-            return result_list[0], result_list[1], result_list[2]
+            
+            #print(result_list[0], result_list[1], result_list[2]);
+            return result_list[0], result_list[1], result_list[2], result_list[3]
     except Exception as e:
         print("Error in get_state:", e)
         return None
 
+def is_float(s):
+    try:
+        float_value = float(s)
+        return True
+    except ValueError:
+        return False
 
 def reset():
     client_socket.send("reset".encode("utf-8"))
-#client_socket.close()
+    # Now wait for the reset acknowledgment
+    while True:
+        data = client_socket.recv(1024).decode("utf-8")
+        if data == "reset_complete":
+            break
