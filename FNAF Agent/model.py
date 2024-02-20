@@ -1,116 +1,194 @@
-import torch
+import torch as T
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-import os
+import torch.optim as optim
 import numpy as np
+import os
+from per import *
 
-class QNetwork(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear1 = nn.Linear(21, 256)
-        self.linear2 = nn.Linear(256, 256)
-        self.v = nn.Linear(256, 1)
-        self.a = nn.Linear(256, 16)
+class ReplayBuffer():
+    def __init__(self, max_size, input_shape):
+        self.mem_size = max_size
+        self.mem_cntr = 0
+        self.state_mem = np.zeros((self.mem_size, *input_shape), dtype=np.float32)
+        self.new_state_mem = np.zeros((self.mem_size, *input_shape), dtype=np.float32)
+        self.action_mem = np.zeros(self.mem_size, dtype=np.int64)
+        self.reward_mem = np.zeros(self.mem_size, dtype=np.float32)
+        self.terminal_mem = np.zeros(self.mem_size, dtype=np.uint8)
 
-    def forward(self,x):
-        x = F.relu(self.linear1(x))
-        x = F.relu(self.linear2(x))
-        v = self.v(x)
-        a = self.a(x)
-        #a = a.view(-1, 16)
-        Q = v + (a - torch.mean(a, dim=1, keepdim=True))
-        return Q
-    
-    def advantage(self, state):
-        x = F.relu(self.linear1(state))
-        x = F.relu(self.linear2(x))
-        a = self.a(x)
-        return a
-    
-    def value(self, state):
-        x = F.relu(self.linear1(state))
-        x = F.relu(self.linear2(x))
-        v = self.v(x)
-        return v.view(-1)  # Reshape to remove singleton dimension
-    
+    def store_transition(self, state, action, reward, state_, done):
+        index = self.mem_cntr % self.mem_size
+        self.state_mem[index] = state
+        self.new_state_mem[index] = state_
+        self.action_mem[index] = action
+        self.reward_mem[index] = reward
+        self.terminal_mem[index] = done
+        self.mem_cntr += 1 
+        #long ass "fake" deque
 
-    def save(self, file_name='model.pth'):
-        model_folder_path = "./model"
-        if not os.path.exists(model_folder_path):
-            os.mkdir(model_folder_path)
+    def sample_buffer(self, batch_size):
+        max_mem = min(self.mem_cntr, self.mem_size)
+        batch = np.random.choice(max_mem, batch_size, replace=False)
 
-        file_name = os.path.join(model_folder_path, file_name)
-        torch.save({'state_dict': self.state_dict(),}, file_name)
+        states = self.state_mem[batch]
+        states_ = self.new_state_mem[batch]
+        actions = self.action_mem[batch]
+        rewards = self.reward_mem[batch]
+        terminal = self.terminal_mem[batch]
+
+        return states, actions, rewards, states_, terminal
+        #TODO: 
+        #Priotetitized experosnance replay
+class DuelingDeepQNetwork(nn.Module):
+    def __init__(self, lr, input_dims, n_actions, checkpoint_dir, name):
+        super(DuelingDeepQNetwork, self).__init__()
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_file = os.path.join(self.checkpoint_dir, name)
+
+        self.input_dims = input_dims
+        self.n_actions = n_actions
         
-    def load(self, file_name='model.pth'):
-        file_name = os.path.join("./model", file_name)
+        self.fc1 = nn.Linear(*self.input_dims, 512)
+        self.V = nn.Linear(512, 1)
+        self.A = nn.Linear(512, self.n_actions)
 
-        # Load the model parameters, record, and epsilon
-        checkpoint = torch.load(file_name)
-        
-        # Load state_dict only for layers that exist in the checkpoint
-        model_state_dict = self.state_dict()
-        for key in checkpoint['state_dict']:
-            if key in model_state_dict:
-                model_state_dict[key] = checkpoint['state_dict'][key]
+        self.optimizer = optim.Adam(self.parameters(), lr=lr)
+        self.loss = nn.MSELoss()
+        self.device = "cpu"
+        self.to(self.device)
 
-        self.load_state_dict(model_state_dict)
-        print(f"Successfully loaded!")
-        
-class QTrainer:
-    def __init__(self, model, target, lr, gamma):
-        self.lr = lr
+    def forward(self, state):
+        flat1 = F.relu(self.fc1(state))
+        V = self.V(flat1)
+        A = self.A(flat1)
+
+        return V,A
+    
+    def save_checkpoint(self):
+        print("-- saving checkpoint --")
+        T.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        print("-- loading checkpoint --")
+        self.load_state_dict(T.load(self.checkpoint_file))
+
+
+class Agent():
+    def __init__(self, gamma, epsilon, lr, n_actions, input_dims, mem_size, batch_size, eps_min = 0.01, eps_dec=5e-7, replace=1000, checkpoint_dir='Agents'):
         self.gamma = gamma
-        self.q_network = model
-        self.target_q_network = target
-        self.optimizer = optim.Adam(model.parameters(), lr=self.lr)
-        self.criterion = nn.MSELoss()#lose function
+        self.epsilon = epsilon
+        self.lr = lr
+        self.n_actions = n_actions
+        self.input_dims = input_dims
+        self.mem_size = mem_size
+        self.batch_size = batch_size
+        self.eps_min = eps_min
+        self.eps_dec = eps_dec
+        self.replace_target_count = replace
+        self.checkpoint_dir = checkpoint_dir
+        self.learn_step_counter = 0
+        self.action_space = [i for i in range(self.n_actions)]
 
-    def update_target_network(self):
-        self.target_q_network.load_state_dict(self.q_network.state_dict())
+        self.MEMORY = Memory(mem_size)
+        self.USE_PER = True
 
-    def train_step(self, state, action, reward, next_state, done):
-        state = torch.tensor(np.array(state), dtype=torch.float)
-        next_state = torch.tensor(np.array(next_state), dtype=torch.float)
-        action = torch.tensor(np.array(action), dtype=torch.float)
-        reward = torch.tensor(np.array(reward), dtype=torch.float)
-        done = torch.tensor(np.array(done), dtype=torch.float)
-        # (n , x ) where n is the batch size
 
-        if(len(state.shape) == 1):
-            # one x lol (1,x) 1 is the batch size
-            state = torch.unsqueeze(state, 0)
-            next_state = torch.unsqueeze(next_state, 0)
-            action = torch.unsqueeze(action, 0)
-            reward = torch.unsqueeze(reward, 0)
-            done = torch.tensor([done], dtype=torch.float32)  # Convert to tensor
-        
-        q_values = self.q_network(state)
-        next_q_values_target = self.target_q_network(next_state)
+        self.memory = ReplayBuffer(mem_size, input_dims)
+        self.q_eval = DuelingDeepQNetwork(self.lr, input_dims=self.input_dims, n_actions=self.n_actions, checkpoint_dir=self.checkpoint_dir, name="fnaf_eval")
+        self.q_next = DuelingDeepQNetwork(self.lr, input_dims=self.input_dims, n_actions=self.n_actions, checkpoint_dir=self.checkpoint_dir, name="fnaf_next")
 
-        action = action.long()
-        target_q_values = next_q_values_target.clone().detach()
-        target_q_values[torch.arange(len(action)), action.squeeze().long()] = reward + self.gamma * torch.max(next_q_values_target, dim=1).values * (1 - done)
-        loss = self.criterion(q_values, target_q_values)
-        self.optimizer.zero_grad()
+    def choose_action(self, observation):
+        if(np.random.random() > self.epsilon):
+            observation_array = np.array(observation)
+            state = T.tensor(observation_array, dtype=T.float).to(self.q_eval.device)
+            _, advantage = self.q_eval.forward(state)
+            action = T.argmax(advantage).item()
+            randomness = "AI"
+        else:
+            action = np.random.choice(self.action_space)
+            randomness = "Epsilon"
+
+        return action, randomness
+    
+    def store_transition(self, state, action, reward, state_, done):
+        experience = state, action, reward, state_, done
+        if self.USE_PER:
+            self.MEMORY.store(experience)
+        else:
+            self.memory.store_transition(state, action, reward, state_, done)
+
+    def replace_target_network(self):
+        if self.learn_step_counter % self.replace_target_count == 0:
+            self.q_next.load_state_dict(self.q_eval.state_dict())
+
+    def decrease_epsilon(self):
+        self.epsilon = self.epsilon - self.eps_dec \
+            if self.epsilon > self.eps_min else self.eps_min
+
+    def save_models(self):
+        self.q_eval.save_checkpoint()
+        self.q_next.save_checkpoint()
+
+    def load_models(self):
+        self.q_eval.load_checkpoint()
+        self.q_next.load_checkpoint()
+
+    def learn(self):
+        if self.memory.mem_cntr < self.batch_size and not self.USE_PER:
+            return
+
+        self.q_eval.optimizer.zero_grad()
+        self.replace_target_network()
+
+        if self.USE_PER:
+            tree_idx, minibatch, IS_weights = self.MEMORY.sample(self.batch_size)
+            state = np.zeros((self.batch_size, *self.input_dims))
+            new_state = np.zeros((self.batch_size, *self.input_dims))
+            action, reward, done = [],[],[]
+
+            for i in range(self.batch_size):
+                #print(minibatch[i][0])
+                state[i] = minibatch[i][0]
+                action.append(minibatch[i][1])
+                reward.append(minibatch[i][2])
+                new_state[i] = minibatch[i][3]
+                done.append(minibatch[i][4])
+        else:
+            state, action, reward, new_state, done = \
+                self.memory.sample_buffer(self.batch_size)
+            
+        states = T.tensor(state).float().to(self.q_eval.device) 
+        actions = T.tensor(action).to(self.q_eval.device)
+        actions = actions.long()
+        rewards = T.tensor(reward).float().to(self.q_eval.device) 
+        states_ = T.tensor(new_state).float().to(self.q_eval.device)  
+        dones = T.tensor(done).to(self.q_eval.device)
+
+        indices = np.arange(self.batch_size)
+
+        V_s, A_s = self.q_eval.forward(states)
+        V_s_, A_s_ = self.q_next.forward(states_)
+
+        V_s_eval, A_s_eval = self.q_eval.forward(states_)
+
+        q_pred = T.add(V_s, (A_s - A_s.mean(dim=1, keepdim=True))).gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        q_next = T.add(V_s_, (A_s_ - A_s_.mean(dim=1, keepdim=True)))
+        q_eval = T.add(V_s_eval, (A_s_eval - A_s_eval.mean(dim=1, keepdim=True)))
+
+        max_actions = T.argmax(q_eval, dim=1)
+
+        q_next[dones] = 0.0 
+        q_target = rewards + self.gamma * q_next[indices, max_actions]
+
+        loss = self.q_eval.loss(q_target, q_pred).to(self.q_eval.device)
         loss.backward()
-        self.optimizer.step()
+        self.q_eval.optimizer.step()
+        self.learn_step_counter += 1
 
-        #1) get predicted q values with current state of game
-        #
-        #pred = self.model(state)
-        #target = pred.clone()
-        #for i in range(len(done)):
-        #    Q_new = reward[i]
-        #if( not done[i]):
-        #   Q_new = reward[i] + self.gamma * torch.max(self.model(next_state[i]))
-        
-        #target[i][torch.argmax(action[i]).item()] = Q_new.item()
-        #2) q_new = formula (bellman) r + gamma * max(next prediction of q value)
-        #clone prediction 
-        #preds[argmax(action)] = q_new
-        #self.optimizer.zero_grad()
-        #loss = self.criterion(target, pred)
-        #loss.backward()
-        #self.optimizer.step()
+        self.decrease_epsilon()
+                
+        if self.USE_PER:
+            IS_weights = T.tensor(IS_weights, dtype=T.float32).to(self.q_eval.device)
+            loss = (IS_weights * self.q_eval.loss(q_target, q_pred)).mean()
+        else:
+            loss = self.q_eval.loss(q_target, q_pred)
