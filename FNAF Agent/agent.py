@@ -1,121 +1,69 @@
-import torch
-import random
 import numpy as np
-from collections import deque
+from model import Agent
+from utils import plotLearning
 import data
-from model import QNetwork, QTrainer
 import time
-import threading
-import os
 from helper import plot
-from epsilongreedypolicy import EpsilonGreedyPolicy
-from replaybuffer import ReplayBuffer
-
-#from helper import plot
-#agent learning curve
-#[power, doorLeft, doorRight, bonniePos, bonnieTimer, freddyPos, freddyTimer, foxyPos, foxyTimer, chicaPos, chicaTimer, freddySFX]
-
-#the doors determine whether they're close or open
-#the pos's are their current position 
-#timer's are how long has it been since you last checked on them
-#freddySFX is the sound he makes when moving
-
-MAX_MEMORY = 1_000_000
-BATCH_SIZE = 32
-LR = 0.0105
-
-class Agent:
-    def __init__(self): #create the agent (need number of games, epsilon value (80 or 90 idk yet))
-        self.num_games = 0
-        self.epsilon = 0 #randomness control
-        self.gamma = 0.99 #discount rate 
-        self.memory = deque(maxlen=MAX_MEMORY) #popleft() called after deque becomes full
-        self.q_network = QNetwork()
-        self.target_q_network = QNetwork()
-        self.trainer = QTrainer(self.q_network, self.target_q_network, lr=LR, gamma = self.gamma)
-
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done)) #popleft() if MAX_MEMORY is reached
-
-    def train_long_memory(self):
-        if(len(self.memory) > BATCH_SIZE):
-            mini_sample = random.sample(self.memory, BATCH_SIZE)
-        else:
-            mini_sample = self.memory
-
-        states, actions, rewards, next_states, dones = zip(*mini_sample)
-        self.trainer.train_step(states, actions, rewards, next_states, dones)
-
-    def train_short_memory(self, state, action, reward, next_state, done):
-        self.trainer.train_step(state, action, reward, next_state, done)
 
 
-    def get_action(self, state, epsilon):
-        epsilon.decay_epsilon()
-        state_tensor = torch.tensor(state, dtype=torch.float32).view(1,-1)
+if(__name__ == "__main__"):
+    load_checkpoint = False
 
-        if epsilon.choose_action(0, 16):
-            return np.random.randint(0, 16)
-        else:
-            advantages = self.q_network.advantage(state_tensor).detach().numpy()
-            action = np.argmax(advantages)  # Choose the action with the highest Q-value
-            return action
+    agent = Agent(gamma=0.99,epsilon=1,lr=4e-4, input_dims=[21],n_actions=16, mem_size=20_000, eps_min=0.01, batch_size=64,eps_dec=3e-6,replace=100)
 
-    
-def train():
+    if load_checkpoint:
+        agent.load_models()
+
+    filename = 'FNAF-DDDQN-Adam-lr5e4-replace100.png'
+    scores, eps_history = [],[]
+    num_games = 10000
+
     plot_scores = []
     plot_mean_scores = []
-    agent = Agent()
-    epsilon = EpsilonGreedyPolicy(initial_epsilon=1, min_epsilon=0.01, decay_rate=0.99999932)
-    # Load the pre-trained model
-    target_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\target_model.pth"
-    model_path = r"C:\Users\mibbd\OneDrive\Desktop\FNAF\FNAF Agent\model\model.pth"
-    if os.path.exists(model_path) and os.path.exists(target_path):
-        agent.target_q_network.load(target_path)
-        agent.q_network.load(model_path)
-
+    total_score = 0
+    record = 0
+    cur_games = 0
+    best_game = 0
     def on_connection_established(client_socket):
-        total_score = 0
-        record = 0
+        global total_score, record, plot_mean_scores, plot_scores, cur_games, best_game
         print("Connection established")
 
-        while True:
-            time.sleep(.3 / 5)
-            # get old state
-            state_old = data.get_state()
-            # get move
-            final_move = agent.get_action(state_old, epsilon)
-            # perform move and get new state
-            reward, done, score = data.play_step(final_move)
+        for i in range(num_games):
+            done = False
+            
 
-            state_new = data.get_state()
-            # train short memory (1 step)
-            agent.train_short_memory(state_old, final_move, reward, state_new, done)
-            # remember
-            agent.remember(state_old, final_move, reward, state_new, done)
-            if done:
-                # train long memory and plot result
-                data.reset()
-                agent.num_games += 1
-                agent.train_long_memory()
-                agent.q_network.save("model.pth")  # Save the model with updated record
+            while not done:
+                observation = data.get_state()
+                action, was_random = agent.choose_action(observation)
+                reward, done, speed, score = data.play_step(action)
+                observation_ = data.get_state()
+                #print(was_random, ": ", reward)
+                agent.store_transition(observation, action, reward, observation_, int(done))
+                agent.learn()
+                time.sleep(.3 / speed) 
+                
+            cur_games += 1
+            data.reset()
+            plot_scores.append(score)
+            total_score += score
+            mean_score = total_score / cur_games
 
-                if(agent.num_games % 10 == 0):
-                    agent.trainer.update_target_network()
+            if record < score:
+                record = score
+                best_game = i
+            plot_mean_scores.append(mean_score)
+            plot(plot_scores, plot_mean_scores)
+            print('episode', i, 'score %.lf' % score, 'average score %.lf ' % mean_score, 'epsilon %.5f ' % agent.epsilon, 'record %.lf ' % record, ' at episode ', best_game)
+            if i > 10 and i % 10 == 0:
+                agent.save_models()
 
-                if score > record:
-                    record = score
-                    agent.target_q_network.save("target_model.pth")  # Save the model with updated record
+            eps_history.append(agent.epsilon)
 
-                print("Game", agent.num_games, 'Score', score, "Record:", record, "Epsilon:", epsilon.epsilon)
-                plot_scores.append(score)
-                total_score += score
-                mean_score = total_score / agent.num_games
-                plot_mean_scores.append(mean_score)
-                plot(plot_scores, plot_mean_scores)
+        print("- training process over -")
+        print("- creating model graph -")
+        x = [i+1 for i in range(num_games)]
+        plotLearning(x,scores,eps_history,filename)
+
+            
 
     data.create_host(on_connection_established)
-
-
-if __name__ == "__main__":
-    train()
