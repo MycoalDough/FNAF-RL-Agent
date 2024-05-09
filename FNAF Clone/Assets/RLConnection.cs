@@ -8,6 +8,8 @@ using UnityEngine;
 using System.Threading;
 using UnityEngine.SceneManagement;
 using TMPro;
+using UnityEngine.UI;
+using System.Linq;
 
 public class RLConnection : MonoBehaviour
 {
@@ -49,19 +51,17 @@ public class RLConnection : MonoBehaviour
     public float score;
     public bool reconnect;
     private static RLConnection instance;
-    public int reward;
+    public float reward;
     public int iterations;
+    public Slider slider;
+    public int time;
+    public TextMeshProUGUI timeText;
     /*/[power, doorLeft, doorRight, bonniePos, bonnieTimer, freddyPos, freddyTimer, foxyPos, foxyTimer, chicaPos, chicaTimer, freddySFX]
 
     the doors determine whether they're close or open
     the pos's are their current position 
     timer's are how long has it been since you last checked on them
     freddySFX is the sound he makes when moving /*/
-
-    public void changeTimeScale()
-    {
-        Time.timeScale = 3;
-    }
 
     private void Awake()
     {
@@ -133,6 +133,7 @@ public class RLConnection : MonoBehaviour
                     {
                         string[] step = message.Split(':');
                         toSend = playStep(int.Parse(step[1]));
+                        toSend += ":" + time;
                         Debug.Log(toSend);
                         byte[] dataToSend = Encoding.UTF8.GetBytes(toSend);
                         stream.Write(dataToSend, 0, dataToSend.Length);  // Fix the size parameter here
@@ -169,6 +170,11 @@ public class RLConnection : MonoBehaviour
     private void Update()
     {
         score += Time.deltaTime;
+
+        time = (int)slider.value;
+        Time.timeScale = time;
+        timeText.text = time.ToString();
+
     }
 
     public void runInGame(int action)
@@ -291,11 +297,7 @@ public class RLConnection : MonoBehaviour
                 {
                     if (bonnieAI.spot != bonnieLastSeen)
                     {
-                        reward += 10;
-                    }
-                    else
-                    {
-                        reward -= 10;
+                        reward += 0.1f;
                     }
                     bonnieLastSeen = bonnieAI.spot;
                 }
@@ -304,11 +306,7 @@ public class RLConnection : MonoBehaviour
                 {
                     if (chicaAI.spot != chicaLastSeen)
                     {
-                        reward += 10;
-                    }
-                    else
-                    {
-                        reward -= 10;
+                        reward += 0.1f;
                     }
                     chicaLastSeen = chicaAI.spot;
                 }
@@ -317,11 +315,7 @@ public class RLConnection : MonoBehaviour
                 {
                     if (freddyAI.spot != freddyLastSeen)
                     {
-                        reward += 10;
-                    }
-                    else
-                    {
-                        reward -= 10;
+                        reward += 0.1f;
                     }
                     freddyLastSeen = freddyAI.spot;
                 }
@@ -330,18 +324,14 @@ public class RLConnection : MonoBehaviour
                 {
                     if (foxyAI.stages != foxyLastSeen)
                     {
-                        reward += 10;
-                    }
-                    else
-                    {
-                        reward -= 10;
+                        reward += 0.1f;
                     }
                     foxyLastSeen = foxyAI.stages;
                 }
 
                 if(foxyAI.foxySeen > 0.5f && freddyAI.bonnieSeen > 0.5f && bonnieAI.bonnieSeen > 0.5f && chicaAI.bonnieSeen > 0.5f)
                 {
-                    reward -= 10;
+                    reward -= 0.1f;
                 }
             }
 
@@ -355,17 +345,17 @@ public class RLConnection : MonoBehaviour
         //check if animatronics were just viewed
         if(alarm.timeAlarm == 6)
         {
-            reward = 80;
+            reward = 1;
             done = true;
         }
         if (alarm.gameOver)
         {
-            reward = -80;
+            reward = -1;
             done = true;
         }
         if(powerManager.power == 0)
         {
-            reward = -80;
+            reward = -1;
             done = true;
         }
         else
@@ -375,7 +365,7 @@ public class RLConnection : MonoBehaviour
             //timer check
             if (alarm.timeAlarm > lastCheckedTime)
             {
-                reward += 10;
+                reward += 0.1f;
             }
             lastCheckedTime = alarm.timeAlarm;
 
@@ -385,11 +375,7 @@ public class RLConnection : MonoBehaviour
             {
                 if ((doorLeft.isClosed && bonnieAI.isAtFinalDoor) || (doorLeft.isClosed && foxyAI.stages == 2))
                 {
-                    reward += 30;
-                }
-                else
-                {
-                    reward -= 20;
+                    reward += 0.5f;
                 }
             }
 
@@ -398,11 +384,7 @@ public class RLConnection : MonoBehaviour
             {
                 if ((doorRight.isClosed && chicaAI.isAtFinalDoor) || (doorRight.isClosed && freddyAI.isAtFinalDoor))
                 {
-                    reward += 30;
-                }
-                else
-                {
-                    reward -= 20;
+                    reward += 0.5f;
                 }
             }
 
@@ -420,11 +402,7 @@ public class RLConnection : MonoBehaviour
         {
             if ((leftLight.lightGameObject.activeInHierarchy && bonnieAI.isAtFinalDoor) || (leftLight.lightGameObject.activeInHierarchy && foxyAI.stages == 2))
             {
-                reward += 10;
-            }
-            else
-            {
-                reward -= 10;
+                reward += 0.1f;
             }
         }
 
@@ -433,11 +411,7 @@ public class RLConnection : MonoBehaviour
         {
             if ((rightLight.lightGameObject.activeInHierarchy && chicaAI.isAtFinalDoor))
             {
-                reward += 10;
-            }
-            else
-            {
-                reward -= 10;
+                reward += 0.1f;
             }
         }
         yield return null;
